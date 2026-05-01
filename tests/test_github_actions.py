@@ -172,6 +172,15 @@ def test_service_map_whitespace_only_env_yields_to_file(
     assert _load_service_map() == {"payments": "deploy-payments"}
 
 
+def test_service_map_whitespace_only_file_yields_to_env(monkeypatch, clean_map_env):
+    """Symmetric to the env→file case: a whitespace-only _FILE value is
+    treated as unset, so a valid env map wins (and isn't rejected as a
+    both-set conflict)."""
+    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP", "payments=deploy-payments")
+    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP_FILE", "   ")
+    assert _load_service_map() == {"payments": "deploy-payments"}
+
+
 def test_service_map_file_empty_object_returns_empty(
     monkeypatch, clean_map_env, tmp_path
 ):
@@ -295,6 +304,17 @@ def test_friendly_http_error_non_404_branches_do_not_leak_service_names(code):
     assert "deploy-payments" not in msg
 
 
+def test_friendly_http_error_500_truncates_long_body():
+    """The 500 branch interpolates `err.response.text[:200]`. Pin the cap so
+    a future change to the slice is caught."""
+    request = httpx.Request("GET", "http://example.test/x")
+    response = httpx.Response(500, text="x" * 300, request=request)
+    err = httpx.HTTPStatusError("500", request=request, response=response)
+    msg = _friendly_http_error(err, "payments", "deploy-payments", "owner/repo")
+    assert "x" * 200 in msg
+    assert "x" * 201 not in msg
+
+
 @pytest.fixture
 def github_creds(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
@@ -349,6 +369,7 @@ def test_get_recent_deploys_rejects_bad_stem_even_if_map_loader_was_bypassed(
     the loader) and confirm the regex at github_actions.py:53 still rejects
     before any URL is built."""
     backend = GitHubActionsBackend()
+    # Intentionally pokes a private attribute to bypass the loader's validation.
     backend._service_map = {"x": "bad;name"}
     with pytest.raises(ValueError, match=r"Invalid workflow stem"):
         backend.get_recent_deploys("x", limit=10)
