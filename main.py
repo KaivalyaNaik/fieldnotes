@@ -20,12 +20,9 @@ def _backend() -> DeploymentBackend:
 def get_recent_deploys(service: str, limit: int = 10) -> list[Deployment]:
     """Return recent deploys for a service, newest first.
 
-    `service` maps to a backend-specific identifier — for the GitHub Actions
-    backend it is the workflow filename without extension, so service="api"
-    reads .github/workflows/api.yml. Real workflows are often named
-    `deploy-api` or `release` — pass that exact stem.
-
-    `limit` must be in [1, 50]; out-of-range values raise ValueError.
+    `service` is a service identifier configured by your operator (e.g.
+    "payments", "api"). `limit` must be in [1, 50]; out-of-range values
+    raise ValueError.
     """
     if not 1 <= limit <= _LIMIT_MAX:
         raise ValueError(f"limit must be between 1 and {_LIMIT_MAX}, got {limit}.")
