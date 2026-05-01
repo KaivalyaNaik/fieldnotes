@@ -3,11 +3,16 @@
 Maps a `service` arg to a workflow filename: service="api" reads
 .github/workflows/api.yml from $GITHUB_REPO. Requires GITHUB_TOKEN with
 `actions:read` and GITHUB_REPO in `owner/repo` form.
+
+If FIELDNOTES_SERVICE_MAP (or FIELDNOTES_SERVICE_MAP_FILE) is set, the
+caller-supplied `service` is resolved through it to a workflow stem first.
 """
 
 import atexit
+import json
 import os
 import re
+from pathlib import Path
 
 import httpx
 
@@ -30,6 +35,7 @@ class GitHubActionsBackend:
                 "GITHUB_REPO must be set to 'owner/repo' for the GitHub Actions deploy backend."
             )
         self._repo = repo
+        self._service_map = _load_service_map()
         self._client = httpx.Client(
             headers={
                 "Authorization": f"Bearer {token}",
@@ -41,23 +47,110 @@ class GitHubActionsBackend:
         atexit.register(self._client.close)
 
     def get_recent_deploys(self, service: str, limit: int) -> list[Deployment]:
-        if not _SERVICE_RE.fullmatch(service):
+        stem = _resolve_workflow_stem(service, self._service_map)
+        # Defense-in-depth: mapped stems are validated at load time, so this
+        # mostly guards the no-map pass-through case.
+        if not _SERVICE_RE.fullmatch(stem):
             raise ValueError(
-                f"Invalid service name {service!r}: must match [A-Za-z0-9_.-]+ "
-                f"(maps to .github/workflows/{service}.yml)."
+                f"Invalid workflow stem {stem!r}: must match {_SERVICE_RE.pattern} "
+                f"(maps to .github/workflows/{stem}.yml)."
             )
-        url = f"{_API}/repos/{self._repo}/actions/workflows/{service}.yml/runs"
+        url = f"{_API}/repos/{self._repo}/actions/workflows/{stem}.yml/runs"
         try:
             resp = self._client.get(url, params={"per_page": limit})
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
-            raise RuntimeError(_friendly_http_error(e, service, self._repo)) from e
+            raise RuntimeError(
+                _friendly_http_error(e, service, stem, self._repo)
+            ) from e
         runs = resp.json().get("workflow_runs", [])
         return [_to_deployment(run) for run in runs]
 
 
+# Empty/whitespace-only env values are treated as unset — operators commonly
+# leave shell vars defined but blank.
+def _load_service_map() -> dict[str, str]:
+    raw_env = os.environ.get("FIELDNOTES_SERVICE_MAP", "").strip()
+    raw_file = os.environ.get("FIELDNOTES_SERVICE_MAP_FILE", "").strip()
+    if raw_env and raw_file:
+        raise RuntimeError(
+            "set FIELDNOTES_SERVICE_MAP or FIELDNOTES_SERVICE_MAP_FILE, not both"
+        )
+    if raw_env:
+        return _parse_service_map_env(raw_env)
+    if raw_file:
+        return _load_service_map_file(raw_file)
+    return {}
+
+
+def _parse_service_map_env(raw: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            raise RuntimeError(f"FIELDNOTES_SERVICE_MAP entry {pair!r} missing '='")
+        key, _, val = pair.partition("=")
+        key = key.strip()
+        val = val.strip()
+        if not key:
+            raise RuntimeError(f"FIELDNOTES_SERVICE_MAP entry {pair!r}: empty key")
+        if not val:
+            raise RuntimeError(f"FIELDNOTES_SERVICE_MAP entry {pair!r}: empty value")
+        if not _SERVICE_RE.fullmatch(val):
+            raise RuntimeError(
+                f"FIELDNOTES_SERVICE_MAP entry {pair!r}: workflow stem {val!r} "
+                f"must match {_SERVICE_RE.pattern}"
+            )
+        if key in out:
+            raise RuntimeError(f"FIELDNOTES_SERVICE_MAP duplicate key {key!r}")
+        out[key] = val
+    return out
+
+
+def _load_service_map_file(path_str: str) -> dict[str, str]:
+    path = Path(path_str)
+    prefix = f"FIELDNOTES_SERVICE_MAP_FILE={path_str}"
+    if path.suffix != ".json":
+        raise RuntimeError(f"{prefix}: only .json files are supported")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise RuntimeError(f"{prefix}: {e}") from e
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"{prefix}: invalid JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"{prefix}: must contain a flat object of string→string"
+        )
+    for k, v in data.items():
+        if not isinstance(k, str) or not isinstance(v, str) or not k or not v:
+            raise RuntimeError(
+                f"{prefix}: must contain a flat object of string→string"
+            )
+        if not _SERVICE_RE.fullmatch(v):
+            raise RuntimeError(
+                f"{prefix}: workflow stem {v!r} for {k!r} "
+                f"must match {_SERVICE_RE.pattern}"
+            )
+    return data
+
+
+def _resolve_workflow_stem(service: str, mapping: dict[str, str]) -> str:
+    if not mapping:
+        return service
+    if service in mapping:
+        return mapping[service]
+    raise ValueError(
+        f"unknown service {service!r}. known: {', '.join(sorted(mapping))}"
+    )
+
+
 def _friendly_http_error(
-    err: httpx.HTTPStatusError, service: str, repo: str
+    err: httpx.HTTPStatusError, logical: str, stem: str, repo: str
 ) -> str:
     code = err.response.status_code
     if code == 401:
@@ -68,8 +161,14 @@ def _friendly_http_error(
             return f"GitHub rate limit exceeded (resets at epoch {reset})."
         return f"GitHub returned 403 Forbidden — token may lack `actions:read` on {repo}."
     if code == 404:
+        if logical != stem:
+            return (
+                f"GitHub returned 404 — service {logical!r} resolved to workflow "
+                f"{stem}.yml, which was not found in {repo} "
+                "(or repo does not exist / token lacks access)."
+            )
         return (
-            f"GitHub returned 404 — workflow {service}.yml not found in {repo}, "
+            f"GitHub returned 404 — workflow {stem}.yml not found in {repo}, "
             "or repo does not exist / token lacks access."
         )
     if code == 429:
