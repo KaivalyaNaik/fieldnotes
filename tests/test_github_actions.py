@@ -1,8 +1,11 @@
 import json
 
+import httpx
 import pytest
 
 from github_actions import (
+    GitHubActionsBackend,
+    _friendly_http_error,
     _load_service_map,
     _map_status,
     _resolve_workflow_stem,
@@ -127,9 +130,21 @@ def test_service_map_file_unsupported_suffix_raises(monkeypatch, clean_map_env, 
         _load_service_map()
 
 
-def test_service_map_file_not_a_mapping_raises(monkeypatch, clean_map_env, tmp_path):
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ["payments", "api"],
+        "not a dict",
+        {"payments": 123},
+        {"": "deploy-payments"},
+        {"payments": ""},
+    ],
+)
+def test_service_map_file_not_a_mapping_raises(
+    monkeypatch, clean_map_env, tmp_path, payload
+):
     p = tmp_path / "services.json"
-    p.write_text(json.dumps(["payments", "api"]))
+    p.write_text(json.dumps(payload))
     monkeypatch.setenv("FIELDNOTES_SERVICE_MAP_FILE", str(p))
     with pytest.raises(RuntimeError, match="flat object"):
         _load_service_map()
@@ -159,3 +174,43 @@ def test_resolve_workflow_stem_unknown_strict_raises_with_known_keys():
         ValueError, match=r"unknown service 'paymets'\. known: api, payments"
     ):
         _resolve_workflow_stem("paymets", mapping)
+
+
+def _http_status_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "http://example.test/x")
+    response = httpx.Response(status, text="", request=request)
+    return httpx.HTTPStatusError(f"{status}", request=request, response=response)
+
+
+def test_friendly_http_error_404_names_both_when_logical_differs_from_stem():
+    msg = _friendly_http_error(
+        _http_status_error(404), "payments", "deploy-payments", "owner/repo"
+    )
+    assert "'payments'" in msg
+    assert "deploy-payments.yml" in msg
+    assert "owner/repo" in msg
+
+
+def test_friendly_http_error_404_compact_when_logical_equals_stem():
+    msg = _friendly_http_error(_http_status_error(404), "ci", "ci", "owner/repo")
+    assert "workflow ci.yml not found" in msg
+
+
+@pytest.fixture
+def github_creds(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    monkeypatch.setenv("GITHUB_REPO", "owner/repo")
+
+
+def test_backend_init_wires_service_map(monkeypatch, clean_map_env, github_creds):
+    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP", "payments=deploy-payments")
+    backend = GitHubActionsBackend()
+    assert backend._service_map == {"payments": "deploy-payments"}
+
+
+def test_backend_init_raises_on_malformed_service_map(
+    monkeypatch, clean_map_env, github_creds
+):
+    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP", "missing-equals")
+    with pytest.raises(RuntimeError, match="missing '='"):
+        GitHubActionsBackend()

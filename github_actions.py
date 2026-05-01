@@ -48,9 +48,11 @@ class GitHubActionsBackend:
 
     def get_recent_deploys(self, service: str, limit: int) -> list[Deployment]:
         stem = _resolve_workflow_stem(service, self._service_map)
+        # Defense-in-depth: mapped stems are validated at load time, so this
+        # mostly guards the no-map pass-through case.
         if not _SERVICE_RE.fullmatch(stem):
             raise ValueError(
-                f"Invalid workflow stem {stem!r}: must match [A-Za-z0-9_.-]+ "
+                f"Invalid workflow stem {stem!r}: must match {_SERVICE_RE.pattern} "
                 f"(maps to .github/workflows/{stem}.yml)."
             )
         url = f"{_API}/repos/{self._repo}/actions/workflows/{stem}.yml/runs"
@@ -99,7 +101,7 @@ def _parse_service_map_env(raw: str) -> dict[str, str]:
         if not _SERVICE_RE.fullmatch(val):
             raise RuntimeError(
                 f"FIELDNOTES_SERVICE_MAP entry {pair!r}: workflow stem {val!r} "
-                f"must match [A-Za-z0-9_.-]+"
+                f"must match {_SERVICE_RE.pattern}"
             )
         if key in out:
             raise RuntimeError(f"FIELDNOTES_SERVICE_MAP duplicate key {key!r}")
@@ -113,7 +115,7 @@ def _load_service_map_file(path_str: str) -> dict[str, str]:
     if path.suffix != ".json":
         raise RuntimeError(f"{prefix}: only .json files are supported")
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except OSError as e:
         raise RuntimeError(f"{prefix}: {e}") from e
     try:
@@ -132,7 +134,7 @@ def _load_service_map_file(path_str: str) -> dict[str, str]:
         if not _SERVICE_RE.fullmatch(v):
             raise RuntimeError(
                 f"{prefix}: workflow stem {v!r} for {k!r} "
-                f"must match [A-Za-z0-9_.-]+"
+                f"must match {_SERVICE_RE.pattern}"
             )
     return data
 

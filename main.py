@@ -21,8 +21,9 @@ def get_recent_deploys(service: str, limit: int = 10) -> list[Deployment]:
     """Return recent deploys for a service, newest first.
 
     `service` is a service identifier configured by your operator (e.g.
-    "payments", "api"). `limit` must be in [1, 50]; out-of-range values
-    raise ValueError.
+    "payments", "api"). If no service map is configured, `service` is
+    forwarded verbatim as the workflow stem. `limit` must be in [1, 50];
+    out-of-range values raise ValueError.
     """
     if not 1 <= limit <= _LIMIT_MAX:
         raise ValueError(f"limit must be between 1 and {_LIMIT_MAX}, got {limit}.")
