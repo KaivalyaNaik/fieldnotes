@@ -58,10 +58,13 @@ export FIELDNOTES_SERVICE_MAP_FILE=/etc/fieldnotes/services.json
 Add all your services or leave the map unset — partial maps will reject
 service names that previously passed through.
 
+**Map keys:** free-form labels (any printable string, including spaces).
+Only the resolved workflow stem must match `[A-Za-z0-9_.-]+`.
+
 **Case-sensitive:** `payments` ≠ `Payments`.
 
 **Pass-through default:** with both env vars unset, `service` is forwarded
-verbatim as the workflow stem (the original behavior).
+verbatim.
 
 **Big-org tip:** generate this file from your service catalog (Backstage, an
 internal registry, etc.). fieldnotes is a leaf consumer, not the catalog.
