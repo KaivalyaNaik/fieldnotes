@@ -247,11 +247,11 @@ def test_resolve_workflow_stem_strict_rejects_previously_passing_workflow_stems(
 
 
 def _http_status_error(
-    status: int, headers: dict | None = None
+    status: int, headers: dict | None = None, text: str = ""
 ) -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", "http://example.test/x")
+    request = httpx.Request("GET", "https://example.test/x")
     response = httpx.Response(
-        status, headers=headers or {}, text="", request=request
+        status, headers=headers or {}, text=text, request=request
     )
     return httpx.HTTPStatusError(f"{status}", request=request, response=response)
 
@@ -307,9 +307,7 @@ def test_friendly_http_error_non_404_branches_do_not_leak_service_names(code):
 def test_friendly_http_error_500_truncates_long_body():
     """The 500 branch interpolates `err.response.text[:200]`. Pin the cap so
     a future change to the slice is caught."""
-    request = httpx.Request("GET", "http://example.test/x")
-    response = httpx.Response(500, text="x" * 300, request=request)
-    err = httpx.HTTPStatusError("500", request=request, response=response)
+    err = _http_status_error(500, text="x" * 300)
     msg = _friendly_http_error(err, "payments", "deploy-payments", "owner/repo")
     assert "x" * 200 in msg
     assert "x" * 201 not in msg
