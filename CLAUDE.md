@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-The repository currently contains only `README.md` and `LICENSE` — no source, build config, or tests have been written yet. Treat the README as a design spec, not a description of existing code. Before assuming any tooling exists (package manager, test runner, lint config), check the working tree.
+v0.1 ships `get_recent_deploys` with a GitHub Actions backend; `tail_logs` and `check_alerts` are not yet implemented. Source lives in `main.py`, `backends.py`, `github_actions.py`, and `models.py`, with tests under `tests/` and packaging via `pyproject.toml` / `uv.lock`. The README still documents the full three-tool design surface — treat it as the spec, not a description of what's currently wired up.
 
 ## What this is
 
