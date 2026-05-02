@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-v0.1 ships `get_recent_deploys` with a GitHub Actions backend; `tail_logs` and `check_alerts` are not yet implemented. Source lives in `main.py`, `backends.py`, `github_actions.py`, and `models.py`, with tests under `tests/` and packaging via `pyproject.toml` / `uv.lock`. The README still documents the full three-tool design surface — treat it as the spec, not a description of what's currently wired up.
+v0.1 ships all three tools: `get_recent_deploys` (GitHub Actions backend), `tail_logs` (Grafana Cloud Loki backend), and `check_alerts` (Alertmanager backend). Source lives in `main.py`, `backends.py`, `github_actions.py`, `loki.py`, `alertmanager.py`, `service_map.py`, and `models.py`, with tests under `tests/` and packaging via `pyproject.toml` / `uv.lock`. The README documents the operator UX.
 
 ## What this is
 
@@ -39,7 +39,7 @@ These come from the README's "Non-goals" section and should shape every implemen
 - **No metric queries.** Alerts are in scope; raw PromQL / arbitrary metric queries are not. The boundary is: "is this firing?" yes, "what's the p99 over 24h?" no.
 - **Pluggable backends, BYO credentials.** The server does not proxy auth or manage credentials — it reads from whatever backend the operator configures. Design tool implementations behind a backend interface so the deploy/log/alert source can be swapped (e.g., GitHub Actions vs. ArgoCD, Loki vs. CloudWatch, Alertmanager vs. PagerDuty).
 - **Single-tenant.** One server, one operator. Don't add multi-tenancy, request-scoped auth, or per-user config.
-- **~300 lines.** The README sets a deliberate size budget. Resist abstractions, frameworks, and config layers that bloat past that — the value is in the constrained surface area.
+- **Three tools, read-only, Protocol-backed, single-tenant.** Resist abstractions, frameworks, and config layers that don't serve those four constraints — the value is in the constrained surface area.
 
 ## Tool contracts
 
