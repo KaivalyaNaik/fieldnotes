@@ -1,7 +1,7 @@
 import os
 from typing import Protocol
 
-from models import Deployment, LogLine
+from models import Alert, Deployment, LogLine
 
 
 class DeploymentBackend(Protocol):
@@ -10,6 +10,12 @@ class DeploymentBackend(Protocol):
 
 class LogBackend(Protocol):
     def tail_logs(self, service: str, lines: int, since: str) -> list[LogLine]: ...
+
+
+class AlertsBackend(Protocol):
+    def check_alerts(
+        self, severity: str | None, service: str | None
+    ) -> list[Alert]: ...
 
 
 def build_deployment_backend() -> DeploymentBackend:
@@ -30,3 +36,14 @@ def build_log_backend() -> LogBackend:
 
         return LokiBackend()
     raise ValueError(f"Unknown FIELDNOTES_LOG_BACKEND={name!r}. Supported: 'loki'.")
+
+
+def build_alerts_backend() -> AlertsBackend:
+    name = os.environ.get("FIELDNOTES_ALERT_BACKEND", "alertmanager")
+    if name == "alertmanager":
+        from alertmanager import AlertmanagerBackend
+
+        return AlertmanagerBackend()
+    raise ValueError(
+        f"Unknown FIELDNOTES_ALERT_BACKEND={name!r}. Supported: 'alertmanager'."
+    )

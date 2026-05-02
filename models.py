@@ -41,6 +41,24 @@ class LogLine(BaseModel):
     labels: dict[str, str] = Field(default_factory=dict)
 
 
+# `LogLevel` uses Unix syslog-ish vocabulary (`fatal`); `AlertSeverity` uses
+# Prometheus/Alertmanager vocabulary (`critical`). Parallel-but-different on
+# purpose — do not "harmonize" them.
+AlertSeverity = Literal["critical", "error", "warning", "info", "unknown"]
+
+
+class Alert(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    fingerprint: str
+    name: str
+    severity: AlertSeverity = "unknown"
+    started_at: datetime
+    summary: str | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    url: str | None = None
+
+
 _SINCE_RE = re.compile(r"^(\d+)([smhd])$")
 _SINCE_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
 

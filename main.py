@@ -1,19 +1,23 @@
 from mcp.server.fastmcp import FastMCP
 
 from backends import (
+    AlertsBackend,
     DeploymentBackend,
     LogBackend,
+    build_alerts_backend,
     build_deployment_backend,
     build_log_backend,
 )
-from models import Deployment, LogLine, parse_since
+from models import Alert, Deployment, LogLine, parse_since
 
 mcp = FastMCP("fieldnotes")
 
 _LIMIT_MAX = 50
 _LINES_MAX = 500
+_ALERT_SEVERITIES = ("critical", "error", "warning", "info")
 _deploy_backend_singleton: DeploymentBackend | None = None
 _log_backend_singleton: LogBackend | None = None
+_alerts_backend_singleton: AlertsBackend | None = None
 
 
 def _deploy_backend() -> DeploymentBackend:
@@ -28,6 +32,13 @@ def _log_backend() -> LogBackend:
     if _log_backend_singleton is None:
         _log_backend_singleton = build_log_backend()
     return _log_backend_singleton
+
+
+def _alerts_backend() -> AlertsBackend:
+    global _alerts_backend_singleton
+    if _alerts_backend_singleton is None:
+        _alerts_backend_singleton = build_alerts_backend()
+    return _alerts_backend_singleton
 
 
 @mcp.tool()
@@ -56,6 +67,23 @@ def tail_logs(service: str, lines: int = 100, since: str = "15m") -> list[LogLin
         raise ValueError(f"lines must be between 1 and {_LINES_MAX}, got {lines}.")
     parse_since(since)
     return _log_backend().tail_logs(service, lines, since)
+
+
+@mcp.tool()
+def check_alerts(
+    severity: str | None = None, service: str | None = None
+) -> list[Alert]:
+    """Return alerts currently firing, optionally filtered by severity or service.
+
+    `severity` is one of "critical", "error", "warning", "info" (or omitted).
+    `service` is a service identifier configured by your operator; if no
+    service map is configured, `service` is forwarded verbatim.
+    """
+    if severity is not None and severity not in _ALERT_SEVERITIES:
+        raise ValueError(
+            f"severity must be one of {_ALERT_SEVERITIES}, got {severity!r}."
+        )
+    return _alerts_backend().check_alerts(severity, service)
 
 
 if __name__ == "__main__":
