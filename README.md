@@ -9,23 +9,42 @@ without giving the model any way to mutate state.
 
 - `get_recent_deploys(service, limit=10)` — recent deploys for a service,
   newest first.
-- `tail_logs(service, lines=100, since="15m")` — recent log lines. *(Not yet
-  implemented.)*
+- `tail_logs(service, lines=100, since="15m")` — recent log lines for a
+  service, newest first. `since` accepts `15m`, `1h`, `24h`, `2d`.
 - `check_alerts(severity=None, service=None)` — currently firing alerts.
   *(Not yet implemented.)*
 
 ## Configuration
 
+### Deploys (GitHub Actions backend)
+
 | Variable | Purpose |
 |---|---|
-| `GITHUB_TOKEN` | GitHub PAT with `actions:read`. Required by the GitHub backend. |
-| `GITHUB_REPO` | `owner/repo` form. Required by the GitHub backend. |
+| `GITHUB_TOKEN` | GitHub PAT with `actions:read`. Required. |
+| `GITHUB_REPO` | `owner/repo` form. Required. |
 | `FIELDNOTES_DEPLOY_BACKEND` | Backend name. Defaults to `github`. |
 | `FIELDNOTES_SERVICE_MAP` | Inline `logical=stem,…` map (see below). |
 | `FIELDNOTES_SERVICE_MAP_FILE` | Path to a `.json` file containing the map. |
 
-`FIELDNOTES_SERVICE_MAP` and `FIELDNOTES_SERVICE_MAP_FILE` are mutually
-exclusive — setting both raises at startup.
+### Logs (Grafana Cloud Loki backend)
+
+| Variable | Purpose |
+|---|---|
+| `LOKI_URL` | Loki base URL, e.g. `https://logs-prod-006.grafana.net`. Required. |
+| `LOKI_USER_ID` | Grafana Cloud user/instance ID for HTTP Basic auth. Required. |
+| `LOKI_API_KEY` | Grafana Cloud access policy token. Required. |
+| `FIELDNOTES_LOG_BACKEND` | Backend name. Defaults to `loki`. |
+| `FIELDNOTES_LOKI_LABEL` | Loki label name to filter on. Defaults to `service`. |
+| `FIELDNOTES_LOG_SERVICE_MAP` | Inline `logical=label-value,…` map (see below). |
+| `FIELDNOTES_LOG_SERVICE_MAP_FILE` | Path to a `.json` file containing the map. |
+
+Self-hosted Loki (with `X-Scope-OrgID` multi-tenancy) is not supported in
+this version — only Grafana Cloud's Basic-auth flow.
+
+The deploy and log service maps are independent: a `service` arg passes
+through whichever map is relevant to the tool being called. Each pair
+(`*_MAP`, `*_MAP_FILE`) is mutually exclusive — setting both raises at
+startup.
 
 ### Configuring services
 
@@ -68,6 +87,11 @@ verbatim.
 
 **Big-org tip:** generate this file from your service catalog (Backstage, an
 internal registry, etc.). fieldnotes is a leaf consumer, not the catalog.
+
+**Log labels:** for `tail_logs`, the `labels` field of each returned line
+reflects whatever your Loki ingestion pipeline emits (pod, env, region,
+etc.). If you don't want a particular identifier visible to the model,
+strip it at ingest — fieldnotes surfaces what Loki provides.
 
 ## Run
 

@@ -9,17 +9,23 @@ caller-supplied `service` is resolved through it to a workflow stem first.
 """
 
 import atexit
-import json
 import os
 import re
-from pathlib import Path
 
 import httpx
 
 from models import Deployment, DeployStatus
+from service_map import load_flat_map, resolve_service
 
 _API = "https://api.github.com"
 _SERVICE_RE = re.compile(r"[A-Za-z0-9_.-]+")
+
+
+def _validate_workflow_stem(value: str) -> None:
+    if not _SERVICE_RE.fullmatch(value):
+        raise ValueError(
+            f"workflow stem {value!r} must match {_SERVICE_RE.pattern}"
+        )
 
 
 class GitHubActionsBackend:
@@ -35,7 +41,11 @@ class GitHubActionsBackend:
                 "GITHUB_REPO must be set to 'owner/repo' for the GitHub Actions deploy backend."
             )
         self._repo = repo
-        self._service_map = _load_service_map()
+        self._service_map = load_flat_map(
+            "FIELDNOTES_SERVICE_MAP",
+            "FIELDNOTES_SERVICE_MAP_FILE",
+            _validate_workflow_stem,
+        )
         self._client = httpx.Client(
             headers={
                 "Authorization": f"Bearer {token}",
@@ -47,7 +57,7 @@ class GitHubActionsBackend:
         atexit.register(self._client.close)
 
     def get_recent_deploys(self, service: str, limit: int) -> list[Deployment]:
-        stem = _resolve_workflow_stem(service, self._service_map)
+        stem = resolve_service(self._service_map, service)
         # Defense-in-depth: mapped stems are validated at load time, so this
         # mostly guards the no-map pass-through case.
         if not _SERVICE_RE.fullmatch(stem):
@@ -65,88 +75,6 @@ class GitHubActionsBackend:
             ) from e
         runs = resp.json().get("workflow_runs", [])
         return [_to_deployment(run) for run in runs]
-
-
-# Empty/whitespace-only env values are treated as unset — operators commonly
-# leave shell vars defined but blank.
-def _load_service_map() -> dict[str, str]:
-    raw_env = os.environ.get("FIELDNOTES_SERVICE_MAP", "").strip()
-    raw_file = os.environ.get("FIELDNOTES_SERVICE_MAP_FILE", "").strip()
-    if raw_env and raw_file:
-        raise RuntimeError(
-            "set FIELDNOTES_SERVICE_MAP or FIELDNOTES_SERVICE_MAP_FILE, not both"
-        )
-    if raw_env:
-        return _parse_service_map_env(raw_env)
-    if raw_file:
-        return _load_service_map_file(raw_file)
-    return {}
-
-
-def _parse_service_map_env(raw: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for pair in raw.split(","):
-        pair = pair.strip()
-        if not pair:
-            continue
-        if "=" not in pair:
-            raise RuntimeError(f"FIELDNOTES_SERVICE_MAP entry {pair!r} missing '='")
-        key, _, val = pair.partition("=")
-        key = key.strip()
-        val = val.strip()
-        if not key:
-            raise RuntimeError(f"FIELDNOTES_SERVICE_MAP entry {pair!r}: empty key")
-        if not val:
-            raise RuntimeError(f"FIELDNOTES_SERVICE_MAP entry {pair!r}: empty value")
-        if not _SERVICE_RE.fullmatch(val):
-            raise RuntimeError(
-                f"FIELDNOTES_SERVICE_MAP entry {pair!r}: workflow stem {val!r} "
-                f"must match {_SERVICE_RE.pattern}"
-            )
-        if key in out:
-            raise RuntimeError(f"FIELDNOTES_SERVICE_MAP duplicate key {key!r}")
-        out[key] = val
-    return out
-
-
-def _load_service_map_file(path_str: str) -> dict[str, str]:
-    path = Path(path_str)
-    prefix = f"FIELDNOTES_SERVICE_MAP_FILE={path_str}"
-    if path.suffix != ".json":
-        raise RuntimeError(f"{prefix}: only .json files are supported")
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as e:
-        raise RuntimeError(f"{prefix}: {e}") from e
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"{prefix}: invalid JSON: {e}") from e
-    if not isinstance(data, dict):
-        raise RuntimeError(
-            f"{prefix}: must contain a flat object of string→string"
-        )
-    for k, v in data.items():
-        if not isinstance(k, str) or not isinstance(v, str) or not k or not v:
-            raise RuntimeError(
-                f"{prefix}: must contain a flat object of string→string"
-            )
-        if not _SERVICE_RE.fullmatch(v):
-            raise RuntimeError(
-                f"{prefix}: workflow stem {v!r} for {k!r} "
-                f"must match {_SERVICE_RE.pattern}"
-            )
-    return data
-
-
-def _resolve_workflow_stem(service: str, mapping: dict[str, str]) -> str:
-    if not mapping:
-        return service
-    if service in mapping:
-        return mapping[service]
-    raise ValueError(
-        f"unknown service {service!r}. known: {', '.join(sorted(mapping))}"
-    )
 
 
 def _friendly_http_error(
