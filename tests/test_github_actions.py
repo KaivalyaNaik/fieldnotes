@@ -1,16 +1,12 @@
-import json
-import re
-
 import httpx
 import pytest
 
 from github_actions import (
     GitHubActionsBackend,
     _friendly_http_error,
-    _load_service_map,
     _map_status,
-    _resolve_workflow_stem,
     _to_deployment,
+    _validate_workflow_stem,
 )
 
 
@@ -69,181 +65,17 @@ def test_to_deployment_missing_actor_defaults_to_unknown():
     assert d.url is None
 
 
-@pytest.fixture
-def clean_map_env(monkeypatch):
-    monkeypatch.delenv("FIELDNOTES_SERVICE_MAP", raising=False)
-    monkeypatch.delenv("FIELDNOTES_SERVICE_MAP_FILE", raising=False)
-
-
 @pytest.mark.parametrize(
-    "raw, expected",
-    [
-        ("", {}),
-        ("   ", {}),
-        ("payments=deploy-payments", {"payments": "deploy-payments"}),
-        (
-            " payments = deploy-payments , api=release ",
-            {"payments": "deploy-payments", "api": "release"},
-        ),
-        ("payments=deploy-payments,", {"payments": "deploy-payments"}),
-        ("my service=deploy-payments", {"my service": "deploy-payments"}),
-    ],
+    "stem", ["deploy-payments", "release", "ci.yml.disabled", "a_b.c-d"]
 )
-def test_service_map_env_parsing(monkeypatch, clean_map_env, raw, expected):
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP", raw)
-    assert _load_service_map() == expected
+def test_validate_workflow_stem_accepts(stem):
+    _validate_workflow_stem(stem)
 
 
-@pytest.mark.parametrize(
-    "raw, err_match",
-    [
-        ("payments", "missing '='"),
-        ("=deploy-payments", "empty key"),
-        ("payments=", "empty value"),
-        ("payments=deploy-payments,payments=other", "duplicate"),
-        ("payments=bad name!", r"\[A-Za-z0-9_\.-\]"),
-        ("payments=deploy=payments", r"\[A-Za-z0-9_\.-\]"),
-    ],
-)
-def test_service_map_env_parsing_errors(monkeypatch, clean_map_env, raw, err_match):
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP", raw)
-    with pytest.raises(RuntimeError, match=err_match):
-        _load_service_map()
-
-
-def test_service_map_from_json_file(monkeypatch, clean_map_env, tmp_path):
-    p = tmp_path / "services.json"
-    p.write_text(json.dumps({"payments": "deploy-payments", "api": "release"}))
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP_FILE", str(p))
-    assert _load_service_map() == {"payments": "deploy-payments", "api": "release"}
-
-
-def test_service_map_file_missing_raises(monkeypatch, clean_map_env, tmp_path):
-    missing = tmp_path / "nope.json"
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP_FILE", str(missing))
-    with pytest.raises(RuntimeError, match="nope.json"):
-        _load_service_map()
-
-
-def test_service_map_file_unsupported_suffix_raises(monkeypatch, clean_map_env, tmp_path):
-    p = tmp_path / "services.yaml"
-    p.write_text("payments: deploy-payments")
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP_FILE", str(p))
-    with pytest.raises(RuntimeError, match="only .json"):
-        _load_service_map()
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        ["payments", "api"],
-        "not a dict",
-        {"payments": 123},
-        {"": "deploy-payments"},
-        {"payments": ""},
-    ],
-)
-def test_service_map_file_not_a_mapping_raises(
-    monkeypatch, clean_map_env, tmp_path, payload
-):
-    p = tmp_path / "services.json"
-    p.write_text(json.dumps(payload))
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP_FILE", str(p))
-    with pytest.raises(RuntimeError, match="flat object"):
-        _load_service_map()
-
-
-def test_service_map_both_env_and_file_set_raises(monkeypatch, clean_map_env, tmp_path):
-    p = tmp_path / "services.json"
-    p.write_text("{}")
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP", "payments=deploy-payments")
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP_FILE", str(p))
-    with pytest.raises(RuntimeError, match="not both"):
-        _load_service_map()
-
-
-def test_service_map_whitespace_only_env_yields_to_file(
-    monkeypatch, clean_map_env, tmp_path
-):
-    p = tmp_path / "services.json"
-    p.write_text(json.dumps({"payments": "deploy-payments"}))
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP", "   ")
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP_FILE", str(p))
-    assert _load_service_map() == {"payments": "deploy-payments"}
-
-
-def test_service_map_whitespace_only_file_yields_to_env(monkeypatch, clean_map_env):
-    """Symmetric to the env→file case: a whitespace-only _FILE value is
-    treated as unset, so a valid env map wins (and isn't rejected as a
-    both-set conflict)."""
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP", "payments=deploy-payments")
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP_FILE", "   ")
-    assert _load_service_map() == {"payments": "deploy-payments"}
-
-
-def test_service_map_file_empty_object_returns_empty(
-    monkeypatch, clean_map_env, tmp_path
-):
-    p = tmp_path / "services.json"
-    p.write_text("{}")
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP_FILE", str(p))
-    assert _load_service_map() == {}
-
-
-def test_service_map_file_whitespace_padded_value_raises(
-    monkeypatch, clean_map_env, tmp_path
-):
-    p = tmp_path / "services.json"
-    p.write_text(json.dumps({"payments": "  deploy-payments  "}))
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP_FILE", str(p))
-    with pytest.raises(RuntimeError, match=r"\[A-Za-z0-9_\.-\]"):
-        _load_service_map()
-
-
-def test_service_map_file_empty_file_raises(monkeypatch, clean_map_env, tmp_path):
-    p = tmp_path / "services.json"
-    p.write_text("")
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP_FILE", str(p))
-    with pytest.raises(RuntimeError, match="invalid JSON"):
-        _load_service_map()
-
-
-def test_service_map_file_directory_path_raises(monkeypatch, clean_map_env, tmp_path):
-    d = tmp_path / "services.json"
-    d.mkdir()
-    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP_FILE", str(d))
-    with pytest.raises(RuntimeError, match=re.escape(str(d))):
-        _load_service_map()
-
-
-def test_resolve_workflow_stem_passthrough_when_map_empty():
-    assert _resolve_workflow_stem("deploy-payments", {}) == "deploy-payments"
-
-
-def test_resolve_workflow_stem_uses_mapping_when_present():
-    mapping = {"payments": "deploy-payments"}
-    assert _resolve_workflow_stem("payments", mapping) == "deploy-payments"
-
-
-def test_resolve_workflow_stem_identity_mapping():
-    """Boundary for the 404 message branch (`logical != stem`)."""
-    assert _resolve_workflow_stem("payments", {"payments": "payments"}) == "payments"
-
-
-def test_resolve_workflow_stem_unknown_strict_raises_with_known_keys():
-    mapping = {"payments": "deploy-payments", "api": "release"}
-    with pytest.raises(
-        ValueError, match=r"unknown service 'paymets'\. known: api, payments"
-    ):
-        _resolve_workflow_stem("paymets", mapping)
-
-
-def test_resolve_workflow_stem_strict_rejects_previously_passing_workflow_stems():
-    """Once a map is set, names not in the map are rejected even if they look
-    like valid workflow stems. Codifies the README's all-or-none semantic."""
-    mapping = {"payments": "deploy-payments"}
-    with pytest.raises(ValueError, match=r"unknown service 'deploy-web'"):
-        _resolve_workflow_stem("deploy-web", mapping)
+@pytest.mark.parametrize("stem", ["bad name!", "deploy=payments", "a/b", ""])
+def test_validate_workflow_stem_rejects(stem):
+    with pytest.raises(ValueError, match=r"\[A-Za-z0-9_\.-\]"):
+        _validate_workflow_stem(stem)
 
 
 def _http_status_error(
@@ -319,6 +151,12 @@ def github_creds(monkeypatch):
     monkeypatch.setenv("GITHUB_REPO", "owner/repo")
 
 
+@pytest.fixture
+def clean_map_env(monkeypatch):
+    monkeypatch.delenv("FIELDNOTES_SERVICE_MAP", raising=False)
+    monkeypatch.delenv("FIELDNOTES_SERVICE_MAP_FILE", raising=False)
+
+
 def test_backend_init_wires_service_map(monkeypatch, clean_map_env, github_creds):
     monkeypatch.setenv("FIELDNOTES_SERVICE_MAP", "payments=deploy-payments")
     backend = GitHubActionsBackend()
@@ -333,26 +171,43 @@ def test_backend_init_raises_on_malformed_service_map(
         GitHubActionsBackend()
 
 
+def test_backend_init_rejects_invalid_workflow_stem(
+    monkeypatch, clean_map_env, github_creds
+):
+    """The validator passed to load_flat_map must reject malformed stems
+    at load time. Error must name the env var so the operator knows what
+    to fix."""
+    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP", "payments=bad name!")
+    with pytest.raises(
+        RuntimeError, match=r"FIELDNOTES_SERVICE_MAP.*\[A-Za-z0-9_\.-\]"
+    ):
+        GitHubActionsBackend()
+
+
+class _FakeResp:
+    def __init__(self, payload: dict | None = None):
+        self._payload = payload or {"workflow_runs": []}
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
 def test_get_recent_deploys_resolves_before_regex_check(
     monkeypatch, clean_map_env, github_creds
 ):
     """A logical name with a space (regex-illegal) must reach GitHub as the
     resolved stem, never as the unresolved input. Pins resolve→validate
-    ordering at github_actions.py:50-55."""
+    ordering at the backend's call site."""
     monkeypatch.setenv("FIELDNOTES_SERVICE_MAP", "my service=deploy-payments")
     backend = GitHubActionsBackend()
     captured: dict[str, str] = {}
 
-    class FakeResp:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return {"workflow_runs": []}
-
     def fake_get(url, params=None):
         captured["url"] = url
-        return FakeResp()
+        return _FakeResp()
 
     monkeypatch.setattr(backend._client, "get", fake_get)
     backend.get_recent_deploys("my service", limit=10)
@@ -360,12 +215,52 @@ def test_get_recent_deploys_resolves_before_regex_check(
     assert "my service" not in captured["url"]
 
 
+def test_get_recent_deploys_passthrough_when_map_empty(
+    monkeypatch, clean_map_env, github_creds
+):
+    backend = GitHubActionsBackend()
+    captured: dict[str, str] = {}
+
+    def fake_get(url, params=None):
+        captured["url"] = url
+        return _FakeResp()
+
+    monkeypatch.setattr(backend._client, "get", fake_get)
+    backend.get_recent_deploys("deploy-payments", limit=10)
+    assert "deploy-payments.yml" in captured["url"]
+
+
+def test_get_recent_deploys_strict_unknown_when_map_set(
+    monkeypatch, clean_map_env, github_creds
+):
+    """Once a map is set, names not in the map are rejected with a useful
+    error listing the known keys. Codifies the README's all-or-none semantic."""
+    monkeypatch.setenv(
+        "FIELDNOTES_SERVICE_MAP", "payments=deploy-payments,api=release"
+    )
+    backend = GitHubActionsBackend()
+    with pytest.raises(
+        ValueError, match=r"unknown service 'paymets'\. known: api, payments"
+    ):
+        backend.get_recent_deploys("paymets", limit=10)
+
+
+def test_get_recent_deploys_strict_rejects_workflow_stems_not_in_map(
+    monkeypatch, clean_map_env, github_creds
+):
+    """Once a map is set, even a name that looks like a valid workflow stem
+    is rejected unless it's a key. Codifies all-or-none."""
+    monkeypatch.setenv("FIELDNOTES_SERVICE_MAP", "payments=deploy-payments")
+    backend = GitHubActionsBackend()
+    with pytest.raises(ValueError, match=r"unknown service 'deploy-web'"):
+        backend.get_recent_deploys("deploy-web", limit=10)
+
+
 def test_get_recent_deploys_rejects_bad_stem_even_if_map_loader_was_bypassed(
     monkeypatch, clean_map_env, github_creds
 ):
     """Last-line-of-defense: hand-craft a malformed _service_map (bypassing
-    the loader) and confirm the regex at github_actions.py:53 still rejects
-    before any URL is built."""
+    the loader) and confirm the regex still rejects before any URL is built."""
     backend = GitHubActionsBackend()
     # Intentionally pokes a private attribute to bypass the loader's validation.
     backend._service_map = {"x": "bad;name"}
